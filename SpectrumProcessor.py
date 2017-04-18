@@ -2,6 +2,63 @@ from detect_peaks import detect_peaks
 import numpy as np
 from matplotlib.pyplot import plot
 from sklearn import svm
+import peakutils
+
+
+#%% FFT
+def CalculateFramesFFT(frames, rate = 8000, chunksize = 2048, avgwind = 6, plot = False):
+    '''
+    Calculate FFT for all frames.
+    frames: np array of time series signals
+    rate: sampling rate. Default: 8000
+    chunksize: size of each chunk of data. Default: 2048
+    avgwind: 6
+    plot: If true, plots the results
+    '''
+    freq_vect = np.fft.rfftfreq(chunksize, 1./rate)
+    fft_frames = np.array([np.fft.rfft(fr) for fr in frames])
+    fft_frames /= np.abs(fft_frames).max()
+    fft_frames = np.abs(fft_frames)
+    #subframes = fft_frames[0:avgwind,:]
+    fft_frames = np.array([np.mean(fft_frames[i:i+avgwind,:],0) for i in range(0,len(fft_frames),avgwind)])
+
+    if plot:
+        plt.plot(freq_vect,fft_frames[0])
+        plt.hold(True)
+        for i in range(1,len(fft_frames)):
+            plt.plot(freq_vect, fft_frames[i])
+        plt.hold(False)
+        ax = plt.gca()
+        ax.set_yscale('log')
+    return (freq_vect, fft_frames)
+#%%
+def GetFeaturesFromFrames(freq_vect, fft_frames, num_features = 6, sp = None, min_freq = 90):
+    '''
+    from the fft of all frames, computes feature vectors
+    num_features: number of features to compute
+    sp: SoundProcessor object. If not specified, will generate a new one
+    Returns: (num_samples, num_features) array of features
+    '''
+    if sp is None:
+        sp = SpectrumProcessor()
+    
+    ok = (freq_vect > min_freq)
+    freq_vect = freq_vect[ok]
+    fft_frames[:,ok]
+    peak_inds = sp.getPeaksFromSpectrogram(freq_vect,fft_frames,num_features)
+    maxinds = [np.argmax(a[peak_inds[i][0]]) for i, a in enumerate(fft_frames)]
+
+    funds = [freq_vect[peak_ind[0][maxinds[i]]] for i, peak_ind in enumerate( peak_inds)]
+    xpeaks = [freq_vect[peak_ind[0]]/funds[i] for i, peak_ind in enumerate(peak_inds)]
+    ypeaks = [np.array(fft_frames[i][peak_ind[0]]) for i, peak_ind in enumerate(peak_inds)]
+    
+    sortinds = [np.argsort(xpeak) for xpeak in xpeaks]    
+    xpeaks_sorted = [xpeak[sortind] for xpeak, sortind in zip(xpeaks,sortinds)]
+    ypeaks_sorted = [ypeak[sortind] for ypeak, sortind in zip(ypeaks,sortinds)]      
+                     
+    X = [np.hstack((xpeaks_sorted, ypeaks_sorted))][0]
+         
+    return X
 
 class SpectrumProcessor(object):
     def __init__(self,freq = None, amp = None):
@@ -27,8 +84,26 @@ class SpectrumProcessor(object):
         M = np.max(data)
         m = np.min(data)
         mph = m + 0.07*(M-m)
+        #mph = 0.07*(M-m)
         th = 0.05*(M-m)
         ind = detect_peaks(data,mph=mph,threshold=th,mpd=8)
+        peak_values = data[ind]
+        self.peaks_found = True
+        self.peak_indeces = ind
+        self.peak_values = peak_values
+        self.peak_freqs = self.freq[ind]
+        return ind
+    
+        
+    def findPeaksPU(self,data=None):
+        if data is None:
+            data = self.amp
+        M = np.max(data)
+        m = np.min(data)
+        mph = m + 0.07*(M-m)
+        #mph = 0.07*(M-m)
+        th = 0.05*(M-m)
+        ind = peakutils.indexes(data, thres=0.02/max(data), min_dist=8)
         peak_values = data[ind]
         self.peaks_found = True
         self.peak_indeces = ind
@@ -86,11 +161,19 @@ class SpectrumProcessor(object):
             except Exception as e:
                 print('Error: {0}'.format(e))
 
+    def getFundamentalByMaximum(self):
+        if self.have_data:
+            if not self.peaks_found:
+                peakindeces = self.findPeaks(self.amp)                
+            else:
+                peakindeces = self.peak_indeces   
                 
     def getFundamentalByPeakDetect(self):
         if self.have_data:
             if not self.peaks_found:
-                peakindeces = self.findPeaks(self.amp)                
+                peakindeces = self.findPeaks(self.amp) 
+                #peakindeces = self.findPeaksPU(self.amp)                
+
             else:
                 peakindeces = self.peak_indeces                
                 
@@ -119,8 +202,13 @@ class SpectrumProcessor(object):
     def getPeaksFromSpectrogram(self,freq=None,amps=None,peaksPerSpectrum = 10):
         if amps is None or freq is None:
             return None
-        self.setFreq(freq)    
-        peaks = np.array([self.findPeaks(a)[:peaksPerSpectrum] for a in amps])
+        self.setFreq(freq)   
+        peaks = []
+        for a in amps:
+            pi = self.findPeaksPU(a)
+            sortedind = np.argsort(a[pi])[::-1]
+            
+            peaks.append(np.array([pi[sortedind[:peaksPerSpectrum]]]))
         return peaks
 
 class MachineLearning:
@@ -147,8 +235,8 @@ class MachineLearning:
         self.features = sorted_peak_amps
         
         
-    def SVManom(self):
-        self.clf = svm.OneClassSVM(nu=0.1, kernel="rbf", gamma=0.1)
+    def SVManom(self, nu=0.1, kernel="rbf", gamma=0.1):
+        self.clf = svm.OneClassSVM(nu=nu, kernel=kernel, gamma=gamma)
         
     def SVC(self):
         self.clf = svm.SVC()

@@ -17,7 +17,7 @@ class MicrophoneRecorder(object):
                                   frames_per_buffer=self.chunksize,
                                   stream_callback=self.new_frame)
         self.lock = threading.Lock()
-        self.stop = False
+        self.stopped = False
         self.running = False
         self.frames = []
         atexit.register(self.close)
@@ -26,7 +26,7 @@ class MicrophoneRecorder(object):
         data = np.fromstring(data, 'int16')
         with self.lock:
             self.frames.append(data)
-            if self.stop:
+            if self.stopped:
                 return None, pyaudio.paComplete
         return None, pyaudio.paContinue
     
@@ -48,7 +48,7 @@ class MicrophoneRecorder(object):
         
     def close(self):
         with self.lock:
-            self.stop = True
+            self.stopped = True
         self.stream.close()
         self.p.terminate()
         
