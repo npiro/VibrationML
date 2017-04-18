@@ -10,7 +10,8 @@ from SpectrumProcessor import SpectrumProcessor, MachineLearning
 import matplotlib.pyplot as plt
 #import peakutils
 import tensorflow as tf
-#%%
+#%% Data files Each pickle file is a list of frames. Each frame is
+# a sequence of 2048 samples with a sampling rate of 8 kHz
 fileNormal1 = 'p3TimeFrames_C043_1.pkl'
 
 fileNormal2 = 'p3TimeFrames_C044_afterAnomalyRemoved.pkl'
@@ -40,6 +41,16 @@ with open(fileAnomalyLarge, 'rb') as f:
 
 #%% FFT
 def CalculateFramesFFT(frames, rate = 8000, chunksize = 2048, avgwind = 6, plot = False):
+"""
+This function calculates the fft of all frames in input argument,
+which should be a list.
+Params:
+    frames: list of frames
+    rate: sampling rate. default to 8000 Hz
+    chunksize: num of samples per frame. Default: 2048
+    avgwind: number of fft frames to average. Default: 6
+    plot: whether to plot the result. Defaut: False
+"""    
     freq_vect = np.fft.rfftfreq(chunksize, 1./rate)
     fft_frames = np.array([np.fft.rfft(fr) for fr in frames])
     fft_frames /= np.abs(fft_frames).max()
@@ -56,9 +67,18 @@ def CalculateFramesFFT(frames, rate = 8000, chunksize = 2048, avgwind = 6, plot 
         ax = plt.gca()
         ax.set_yscale('log')
     return (freq_vect, fft_frames)
-#%%
+#%% Function to compute features for model 
 import pdb
 def GetFeaturesFromFrames(freq_vect, fft_frames, num_features = 6, sp = None, plot = False):
+"""
+Calculates features from a list of fft_frames (computed with CalculateFramesFFT)
+params:
+    freq_vect: vector of frequencies of each fft_frame (output of CalculateFramesFFT)
+    fft_frames: list of FFT frames output of CalculateFramesFFT
+    num_features: number of features to compute. Default: 6
+    sp: Sound processing object. If Default to None: generated inside function
+    plot: Whether to plot the results: default: False
+"""
     if sp is None:
         sp = SpectrumProcessor()
     peak_inds = sp.getPeaksFromSpectrogram(freq_vect,fft_frames,num_features)
@@ -75,7 +95,13 @@ def GetFeaturesFromFrames(freq_vect, fft_frames, num_features = 6, sp = None, pl
     X = [np.hstack((xpeaks_sorted, ypeaks_sorted))][0]
          
     return (X, peak_inds)
-#%% Train svm
+#%% Calculate FFTs, extract features and train svm for the following cases:
+# 1) framesNor: normal behaviour: fan without anomaly
+# 2) framesNor2: another file same as 1
+# 3) framesNor3: idem
+# 4) framesAno: Small anomaly case: small piece of tape in one blade of fan
+# 5) framesAnoLarge: Large anomaly case: piece of metal on fan blade
+
 num_features = 8
 avgwind_train = 5
 avgwind_test = 3
@@ -90,15 +116,24 @@ avgwind_test = 3
 (freq_vect, fft_frames_anom_L) = CalculateFramesFFT(framesAnoLarge, avgwind=avgwind_test)
 (X_anom_L, _) = GetFeaturesFromFrames(freq_vect, fft_frames_anom_L, num_features=num_features)
 
-
+# Make machine learning object. In this case we
+# use the SVManom model (one-class support vector machine)
 ml = MachineLearning()
 ml.SVManom(kernel='rbf', nu=0.05, gamma = 0.5)
+# concatenate all normal data together to use a single train/test set
 Xall = np.vstack((X_norm, X_norm2, X_norm3))
 
+# Split data in train and test sets
 from sklearn.model_selection import train_test_split
 probFailureNormal = []
 probFailureAnomaly = []
 probFailureAnomalyLarge = []
+
+# Repeat 10 times, for each data set:
+# split data in train and test sets (15% in test set)
+# Fit machine learning model to train set
+# Predict the test set to compute number of normal and anomalous cases
+# compute probability of anomaly (number of anomalous cases)/(num of total cases)
 for i in range(0,10):
     Xtrain, Xtest = train_test_split(Xall, test_size=0.15, train_size=None, random_state=None)
     ml.clf.fit(Xtrain)
@@ -109,7 +144,7 @@ for i in range(0,10):
     predAnomalyLarge = ml.clf.predict(X_anom_L)
     probFailureAnomalyLarge.append(sum(predAnomalyLarge==-1)/float(len(predAnomalyLarge)))
 
-
+# print results
 print(np.mean(probFailureNormal))
 print(np.mean(probFailureAnomaly))
 print(np.mean(probFailureAnomalyLarge))
@@ -117,7 +152,7 @@ print(np.mean(probFailureAnomalyLarge))
 
 #ml.clf.score(X_norm2)
 
-#%%
+#%% Plot results
 import scipy as sp
 time = np.linspace(0, 2048/8000., 2048)
 framesNorNP = np.array(framesNor)
